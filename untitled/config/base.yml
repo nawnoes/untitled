@@ -1,0 +1,123 @@
+# This sentinel is a reminder to choose a real run name.
+# If there is already a checkpoint under this run, that checkpoint will auto-resume.
+run_name: ""
+
+# If we aren't resuming from an existing checkpoint, load parameters from this path if provided.
+load_parameters_path: ""
+
+reuse_example_batch: 0 # for testing TPU performance, this options repeated uses the same batch.
+
+metrics_file: "" # for testing, local file that stores scalar metrics. If empty, no metrics are written.
+# If true save metrics such as loss and TFLOPS to GCS in {base_output_directory}/{run_name}/metrics/
+gcs_metrics: False
+
+# Activation dtypes.
+dtype: "bfloat16"
+use_int8_training: False
+# Global parameter scale needs to be a power of 2. If you want finer grained control of the model sizes 
+# then you should explicitly set base_embed_dim, base_num_heads, base_mlp_dim, base_num_decoder_layers and/or head_dim.
+global_parameter_scale: 1
+base_emb_dim: 2048
+base_num_heads: 8
+base_mlp_dim: 8192
+base_num_decoder_layers: 20
+head_dim: 256
+# activation functions are .
+mlp_activations: ["relu"]
+dropout_rate: 0
+logits_via_embedding: True  # NOTE: this is True just for testing.
+# proj, minimal, full, or none
+remat_policy: 'minimal'
+scan_layers: True
+param_scan_axis: 1
+
+record_internal_nn_metrics: 0
+
+# Output directory
+# Create a GCS bucket, e.g. my-maxtext-outputs and set this to "gs://my-maxtext-outputs/"
+base_output_directory: ""
+
+# Parallelism
+mesh_axes: ['data', 'fsdp', 'tensor']
+logical_axis_rules: [
+                      ['activation_batch', ['data', 'fsdp']],
+                      ['activation_length' , ['data', 'fsdp']],
+                      ['activation_embed', 'tensor'],
+                      ['activation_mlp', 'tensor'],
+                      ['activation_heads', 'tensor'],
+                      ['activation_kv', 'tensor'],
+                      ['activation_vocab', 'tensor'],
+                      ['mlp', 'tensor'],
+                      ['vocab', 'tensor'],
+                      ['embed', 'fsdp'],
+                      ['heads', 'tensor'],
+                    ]
+data_sharding: [['data', 'fsdp', 'tensor']]
+
+# One axis for each parallelism type may hold a placeholder (-1)
+# value to auto-shard based on available slices and devices.
+# By default, product of the DCN axes should equal number of slices
+# and product of the ICI axes should equal number of devices per slice.
+dcn_data_parallelism: -1  # recommended DCN axis to be auto-sharded
+dcn_fsdp_parallelism: 1
+dcn_tensor_parallelism: 1
+ici_data_parallelism: 1
+ici_fsdp_parallelism: -1  # recommended ICI axis to be auto-sharded
+ici_tensor_parallelism: 1
+
+
+# Dataset
+# Replace with your path given as argument in download_dataset.sh, e.g. "gs://my-maxtext-dataset/"
+dataset_path: ""
+vocab_size: 32_768 # powers of 2 for sharding
+vocab_relative_path: "vocabs"  # Assumes we're allowed
+dataset_name: 'c4/en:3.0.1'
+eval_dataset_name: 'c4/en:3.0.1'
+eval_split: 'validation'
+per_device_batch_size: 24
+eval_per_device_batch_size: 0
+max_corpus_chars: 10_000_000
+
+# Training loop
+steps: 150_001
+log_period: 100
+save_period: 10_000
+learning_rate: 3.e-5
+warmup_steps: 15_000
+
+# Maximum length cutoff for training examples.
+max_target_length: 1024
+# Maximum length cutoff for held-out evaluation examples.
+max_eval_target_length: 512
+
+# Maximum length cutoff for predicted tokens.
+max_predict_length: 50
+# Sampling temperature for language model inference.
+sampling_temperature: 0.6
+# Top k cutoff for logit sampling. If 0 then no top-k cutoff is used.
+sampling_top_k: 20
+eos_id: 2  # sentencepiece default
+# Prompt for language model sampling.
+prompt: "I love to "
+
+enable_profiler: False
+# If enable_checkpointing is true, an asynchronous checkpointer will be used if
+# async_checkpointing is true, else a synchronous one is used. If you have
+# problems with the checkpointer we recommend trying the sychronous one.
+enable_checkpointing: True
+async_checkpointing: True
+
+# Set these two to False to run deterministically (i.e. reproducible losses)
+enable_dropout: True
+enable_data_shuffling: True
+
+# Adam optimizer parameters
+adam_b1: 0.9 # Exponential decay rate to track the first moment of past gradients.
+adam_b2: 0.95 # Exponential decay rate to track the second moment of past gradients.
+adam_eps: 1.e-8 # A small constant applied to denominator outside of the square root.
+adam_eps_root: 0. # A small constant applied to denominator inside the square root.
+
+# Stack trace parameters
+collect_stack_trace: True
+stack_trace_to_cloud: False  # Uploads to cloud logging if True, else to the console if False.
+stack_trace_interval_seconds: 600  # Stack trace collection frequency in seconds.
