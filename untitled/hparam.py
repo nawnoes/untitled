@@ -12,8 +12,6 @@ def string_to_bool(s:str):
         return True
     elif s.lower() in ['false', '0']:
         return False
-    
-_yaml_types_to_parser = {str: str, int:int, float:float, bool: string_to_bool}
 
 _config = None
 conifg = None
@@ -101,10 +99,12 @@ class HyperParameters():
     def __setattr__(self, attr, value):
         raise ValueError
     
+    
 def initialize(argv, **kwargs):
     global _config, config
     _config = _HyperParameters(argv, **kwargs) 
     config = HyperParameters()
+
 
 if __name__ == "__main__":
     initialize(sys.argv)
