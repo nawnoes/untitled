@@ -124,10 +124,13 @@ def train_loop(config, state=None):
     state, state_mesh_annotations = utils.setup_initial_state(model, optimizer, init_rng, mesh, checkpoint_manager)
     data_pspec = P(*config.data_sharding)
     
+    # Number of parameters and TFLOPS
     num_model_parameters = calculate_num_params_from_pytree(state.params)
     log(f'Number of model parameters: {num_model_parameters/10**9:.3f} Billion')
     per_device_tflops = calculate_training_tflops(num_model_parameters, config)
+    log(f'Per device TFLOPS: {per_device_tflops:.3f}')
     
+    # Pjit training step
     p_train_step = pjit(
         train_step,
         in_axis_resources=(state_mesh_annotations, data_pspec, None),
