@@ -69,13 +69,20 @@ def dot_product_attention(query,
     return jnp.einsum('bhqk,bkhd->bqhd', attn_weight, value)
 
 def nd_dense_init(scale, mode, distribution):
-    pass
+    "Initializer with in_axis, out_axis set at call time."
+    def init_fn(key, shape, dtype, in_axis, out_axis):
+        fn = jax.nn.initializers.variance_scaling(scale, mode, distribution, in_axis, out_axis)
+        return fn
+    return init_fn
 
 def _normalize_axes(axes, ndim):
-    pass
+    return tuple(ax if ax>=0 else ndim + ax for ax in axes)
 
 def _canonicalize_tuple(x):
-    pass
+    if isinstance(x, Iterable):
+        return tuple(x)
+    else:
+        return (x,)
 
 class DenseGeneral(nn.Module):
     pass
