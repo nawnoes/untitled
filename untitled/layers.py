@@ -33,8 +33,40 @@ NdInitializer = Callable[[PRNGKey, Shape, DType, InitializerAxis, InitializerAxi
 
 default_embed_init = nn.initializers.variance_scaling(1.0, 'fan_in', 'normal', out_axis=0)
 
-def dot_product_attention(query, key, value, bias, dropout_rng, dropout_rate, deterministic, dtype, float32_logits):
-    pass
+def dot_product_attention(query, 
+                          key, 
+                          value, 
+                          bias: Optional[Array] = None, 
+                          dropout_rng: Optional[PRNGKey] = None, 
+                          dropout_rate: float = 0., 
+                          deterministic: bool = False, 
+                          dtype: jnp.dtype = jnp.float32, 
+                          float32_logits: bool = False):
+    if float32_logits:
+        query = query.astype(jnp.float32)
+        key = key.astype(jnp.float32)
+    
+    query = LayerNorm(dtype=dtype, name='query_layer_norm', kernel_axes = ('head',))(query)
+    key = LayerNorm(dtype=dtype, name='key_layer_norm', kernel_axes = ('head',))(key)
+    
+    attn_weight = jnp.einsum('bqhd,bkhd->bhqk', query, key)
+    
+    if bias is not None:
+        attn_weight = attn_weight + bias.astype(attn_weight.dtype)
+    
+    attn_weight = jax.nn.softmax(attn_weight).astype(dtype)
+    
+    if not deterministic and dropout_rate > 0.:
+        keep_prob = 1.0 - dropout_rate
+        dropout_shape = list(attn_weight.shape)
+        dropout_shape[-2] = 1 # bhqk -> bh1k
+        keep = random.bernoulli(dropout_rng, keep_prob, dropout_shape)
+        keep = jnp.broadcast_to(keep, attn_weight.shape)
+        
+        multiplier = keep.astype(attn_weight.dtype) / jnp.asarray(keep_prob, dtype=dtype)
+        attn_weight = attn_weight * multiplier
+        
+    return jnp.einsum('bhqk,bkhd->bqhd', attn_weight, value)
 
 def nd_dense_init(scale, mode, distribution):
     pass
