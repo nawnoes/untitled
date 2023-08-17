@@ -21,15 +21,15 @@ Config = Any
 
 # Type annotations
 Array = jnp.ndarray
-DType = jnp.dtype
+Dtype = jnp.dtype
 PRNGKey = jnp.ndarray
 Shape = Iterable[int]
 Activation = Callable[..., Array]
 
 # Parameter initializers.
-Initializer = Callable[[PRNGKey, Shape, DType], Array]
+Initializer = Callable[[PRNGKey, Shape, Dtype], Array]
 InitializerAxis = Union[int, Tuple[int, ...]]
-NdInitializer = Callable[[PRNGKey, Shape, DType, InitializerAxis, InitializerAxis], Array]
+NdInitializer = Callable[[PRNGKey, Shape, Dtype, InitializerAxis, InitializerAxis], Array]
 
 default_embed_init = nn.initializers.variance_scaling(1.0, 'fan_in', 'normal', out_axis=0)
 
@@ -85,7 +85,38 @@ def _canonicalize_tuple(x):
         return (x,)
 
 class DenseGeneral(nn.Module):
-    pass
+    features: Union[Iterable[int], int]
+    config: Config
+    axis: Union[Iterable[int], int] = -1
+    dtype: Dtype = jnp.float32
+    kernel_init: NdInitializer = nd_dense_init(1.0, 'fan_in', 'truncated_normal') # distribution scale 1.0, 'fan_in' use for standard deviation sqrt(scale/n).
+    kernel_axes: Tuple[str, ...] = ()
+    
+    @nn.compact
+    def __call__(self, inputs: Array) -> Array:
+        config = self.config
+        features = _canonicalize_tuple(self.features)
+        axis = _canonicalize_tuple(self.axis)
+        
+        inputs = jnp.asarray(inputs, self.dtype)
+        axis = _normalize_axes(self.axis, inputs.ndim)
+        
+        kernel_shape = tuple(inputs.shape[ax] for ax in axis) + features
+        kernel_in_axis = np.arange(len(axis))
+        kernel_out_axis = np.arange(len(axis), len(axis) + len(features))
+        
+        kernel = self.param(
+            'kernel',
+            nn.with_logical_partitioning(self.kernel_init, self.kernel_axes),
+            kernel_shape,
+            jnp.float32,
+            kernel_in_axis,
+            kernel_out_axis
+        )
+        kernel = jnp.asarray(kernel, self.dtype)
+        
+        contract_ind = tuple(range(0, len(axis)))
+        return lax.dot_general(inputs, kernel, ((axis, contract_ind), ((),())))
 
 def _convert_to_activationf_function(fn_or_string):
     if fn_or_string == 'linear':
@@ -96,7 +127,95 @@ def _convert_to_activationf_function(fn_or_string):
         return fn_or_string
 
 class MultiHeadDotProductAttention(nn.Module):
-    pass
+    num_heads: int
+    head_dim: int
+    config: Config
+    dtype: Dtype = jnp.float32
+    dropout_rate: float = 0.
+    kernel_init: NdInitializer = nd_dense_init(1.0, 'fan_in', 'normal')
+    float32_logits: bool = False
+    
+    @nn.compact
+    def __call__(self,
+                 inputs_q: Array,
+                 inputs_kv: Array,
+                 mask: Optional[Array] = None,
+                 bias: Optional[Array] = None,
+                 *,
+                 decode: bool = False,
+                 deterministic: bool = False) -> Array:
+        config = self.config
+        projection = functools.partial(
+            DenseGeneral,
+            axis=-1,
+            features=(self.num_heads, self.head_dim),
+            kernel_axes=('embed', 'heads', 'kv'),
+            dtype=self.dtype,
+            config=config
+        )
+        # rescale the attention logits by 1/sqrt(depth_kq)
+        depth_scaling = jnp.sqrt(self.head_dim).astype(self.dtype)
+        def query_init(*args):
+            return self.kernel_init(*args) / depth_scaling
+        
+        # project input to multi-headed q/k/v
+        query = projection(kernel_init=query_init, name='query')(inputs_q)
+        key = projection(kernel_init=self.kernel_init, name='key')(inputs_kv)
+        value = projection(kernel_init=self.kernel_init, name='value')(inputs_kv)
+        
+        query = nn.with_logical_partitioning(query, ('activation_bathc', 'activation_length', 'activation_heads', 'activation_kv'))
+        query = checkpoint_name(query, 'query_proj')
+        
+        key = nn.with_logical_partitioning(key, ('activation_bathc', 'activation_length', 'activation_heads', 'activation_kv'))
+        key = checkpoint_name(key, 'key_proj')
+        
+        value = nn.with_logical_partitioning(value, ('activation_bathc', 'activation_length', 'activation_heads', 'activation_kv'))
+        value = checkpoint_name(value, 'value_proj')
+        
+        if decode:
+            # Need to add cache for fast decoding
+            pass
+        
+        if mask is not None:
+            attention_bias = lax.select(
+                mask>0,
+                jnp.full(mask.shape, 0.).astype(self.dtype),
+                jnp.full(mask.shape, -1e10).astype(self.dtype)
+            )
+        else:
+            attention_bias = None
+        
+        if bias is not None: # add provided bias term(e.g. relative position embedding)
+            attention_bias = combine_biases(attention_bias, bias)
+            
+        dropout_rng = None
+        if not deterministic and self.dropout_rate > 0.:
+            dropout_rng = self.make_rng('dropout')
+            
+        x = dot_product_attention(
+            query,
+            key,
+            value,
+            bias=attention_bias,
+            dropout_rng=dropout_rng,
+            dropout_rate=self.dropout_rate,
+            deterministic=deterministic,
+            dtype=self.dtype,
+            float32_logits=self.float32_logits
+        )
+        
+        out = DenseGeneral(
+            feature=inputs_q.shape[-1],
+            axis=(-2, -1),
+            kernel_init=self.kernel_init,
+            kernel_axes=('head', 'kv', 'embed'),
+            dtype=self.dtype,
+            name='out',
+            config=config
+        )(x)
+        
+        return out
+        
 
 class MLPBlock(nn.Module):
     pass
