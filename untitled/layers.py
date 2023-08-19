@@ -163,13 +163,13 @@ class MultiHeadDotProductAttention(nn.Module):
         key = projection(kernel_init=self.kernel_init, name='key')(inputs_kv)
         value = projection(kernel_init=self.kernel_init, name='value')(inputs_kv)
         
-        query = nn.with_logical_partitioning(query, ('activation_bathc', 'activation_length', 'activation_heads', 'activation_kv'))
+        query = nn.with_logical_constraint(query, ('activation_bathc', 'activation_length', 'activation_heads', 'activation_kv'))
         query = checkpoint_name(query, 'query_proj')
         
-        key = nn.with_logical_partitioning(key, ('activation_bathc', 'activation_length', 'activation_heads', 'activation_kv'))
+        key = nn.with_logical_constraint(key, ('activation_bathc', 'activation_length', 'activation_heads', 'activation_kv'))
         key = checkpoint_name(key, 'key_proj')
         
-        value = nn.with_logical_partitioning(value, ('activation_bathc', 'activation_length', 'activation_heads', 'activation_kv'))
+        value = nn.with_logical_constraint(value, ('activation_bathc', 'activation_length', 'activation_heads', 'activation_kv'))
         value = checkpoint_name(value, 'value_proj')
         
         if decode:
@@ -218,31 +218,242 @@ class MultiHeadDotProductAttention(nn.Module):
         
 
 class MLPBlock(nn.Module):
-    pass
+    config: Config
+    intermediate_dim: int = 2048
+    activations: Sequence[Union[str, Callable]] = ('relu',)
+    kernel_init: NdInitializer = nd_dense_init(1.0, 'fan_in', 'truncated_normal')
+    intermediate_dropout_rate: float = 0.1
+    dtype: Any = jnp.float32
+    
+    @nn.compact
+    def __call__(self, inputs, decode: bool = False, deterministic: bool = False):
+        config = self.config
+        activations = []
+        for idx, act_fn in enumerate(self.activations):
+            dense_name = 'wi' if len(self.activations) == 1 else f'wi_{idx}'
+            
+            x = DenseGeneral(
+                self.intermediate_dim,
+                dtype=self.dtype,
+                kernel_init=self.kernel_init,
+                kernel_axes=('embed', 'mlp'),
+                name=dense_name,
+                config=config
+            )(inputs)
+            
+            x = _convert_to_activationf_function(act_fn)(x)
+            activations.append(x)
+        
+        x = functools.reduce(operator.mul, activations)
+        x = nn.Dropout(
+            rate=self.intermediate_dropout_rate,
+            broadcast_dims=(-2,)
+        )(x, deterministic=deterministic)
+        
+        x = nn.with_logical_constraint(x, ('activation_batch', 'activation_length', 'activation_mlp'))
+        output = DenseGeneral(
+            inputs.shape[-1],
+            dtype=self.dtype,
+            kernel_init=self.kernel_init,
+            kernel_axes=('mlp', 'embed'),
+            name='wo',
+            config=config
+        )(x)
+        
+        return output
 
 class LayerNorm(nn.Module):
-    pass
+    epsilon: float = 1e-6
+    dtype: Any = jnp.float32
+    kernel_axes: Tuple[str, ...] = ()
+    scale_init: Initializer = nn.initializers.ones
+    
+    @nn.compact
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        x = jnp.asarray(x, jnp.float32)
+        features = x.shape[-1]
+        
+        mean2 = jnp.mean(lax.square(x), axis=-1, keepdims=True)
+        y = jnp.asarray(x * lax.rsqrt(mean2 + self.epsilon), self.dtype)
+        
+        scale = self.param(
+            'scale',
+            nn.with_logical_partitioning(self.scale_init, self.kernel_axes),
+            (features,),
+            jnp.float32
+        )
+        scale = jnp.asarray(scale, self.dtype)
+        
+        return y * scale
 
 class Embedding(nn.Module):
-    pass
+    num_embeddings: int
+    features: int
+    cast_input_dtype: Optional[Dtype] = None
+    dtype: Dtype = jnp.float32
+    attend_dtype: Optional[Dtype] = None
+    embedding_init: Initializer = default_embed_init
+    embedding: Array = dataclasses.field(init=False)
+    
+    def setup(self):
+        self.embedding = self.param(
+            'embedding',
+            nn.with_logical_partitioning(self.embedding_init, ('vocab', 'embed')),
+            (self.num_embeddings, self.features),
+            jnp.float32
+        )
+    
+    def __call__(self, inputs: Array) -> Array:
+        if self.cast_input_dtype:
+            inputs = inputs.astype(self.cast_input_dtype)
+        output = jnp.asarray(self.embedding, self.dtype)[inputs]
+        output = nn.with_logical_constraint(output, ('activation_batch', 'activation_length', 'activation_embed'))
+        return output
 
 class RelativePositionBiases(nn.Module):
-    pass
+    num_buckets: int
+    max_distance: int
+    num_heads: int
+    dtype: Any
+    embedding_init: Callable[..., Array] = nn.linear.default_embed_init
+    
+    @staticmethod
+    def _relative_position_bucket(relative_position,
+                                bidirectional=True,
+                                num_bucket=32,
+                                max_distance=128):
+        """Translate relative position to a bucket number for relative attention
+        
+        the relative position is defined as memory_position - query_position
+        i.e. the distance in token from the attending position to the attended to position.
+        If bidirectional=False then positive relative position are invalid
+        
+        we use smaller buckets for small absolute relative postion and larger buckeys for larger
+        absolute relative positions. All relative positions >= max distance map to the same bucket.
+        All relative positions <= max_distance map to the same bucket. 
+        
+        This should allow for more graceful generalization to longer sequences than the model 
+        has been trained on.
+        """
+        ret = 0
+        n = -relative_position
+        if bidirectional:
+            num_bucket //= 2
+            ret += (n < 0).astype(np.int32) * num_bucket
+            n = np.abs(n)
+        else:
+            n = np.maximum(n, 0)
+            
+        max_exact = num_bucket // 2
+        is_small = n < max_exact
+        
+        val_if_large = max_exact + (np.log(n.astype(np.float32) / max_exact + np.finfo(np.float32).eps) /
+                                    np.log(max_distance / max_exact) * (num_bucket - max_exact)).astype(np.int32)
+        val_if_large = np.minimum(val_if_large, num_bucket - 1)
+        ret += np.where(is_small, n, val_if_large)
+        
+        return ret
+    @nn.compact
+    def __call__(self, q_len, k_len, bidirectional=True):
+        context_position = np.arange(q_len, dtype=jnp.int32)[:, None]
+        memory_position = np.arange(k_len, dtype=jnp.int32)[None, :]
+        relative_position = memory_position - context_position
+        
+        rp_bucket = self._relative_position_bucket(
+            relative_position,
+            bidirectional=bidirectional,
+            num_bucket=self.num_buckets,
+            max_distance=self.max_distance
+        )
+        relative_attention_bias = self.param(
+            'rel_embedding',
+            nn.with_logical_partitioning(self.embedding_init, ('heads', 'relpos_buckets')),
+            (self.num_heads, self.num_buckets),
+            jnp.float32
+        )
+        relative_attention_bias = jnp.asarray(relative_attention_bias, self.dtype)
+        bcast_iota = lax.broadcasted_iota(jnp.int32, (self.num_buckets, 1, 1), 0)
+        rp_bucket_one_hot = jnp.array(rp_bucket[jnp.newaxis, ...] == bcast_iota, dtype=self.dtype)
+        
+        values = lax.dot_general(
+            relative_attention_bias, 
+            rp_bucket_one_hot,
+            (((1,), (0,)),
+            ((), ()))
+        )
+        return values[jnp.newaxis, ...]
 
-def make_attention_mask():
-    pass
+def make_attention_mask(query_input: Array,
+                        key_input: Array,
+                        pairwise_fn: Callable =jnp.multiply,
+                        extra_batch_dims: int = 0,
+                        dtype: Dtype = jnp.float32):
+    mask = pairwise_fn(
+        jnp.expand_dims(query_input, axis=-1), # [batch, len_q] -> [batch, len_q, 1]
+        jnp.expand_dims(key_input, axis=-2) # [batch, len_q] -> [batch, 1, len_kv]
+    )
+    
+    mask = jnp.expand_dims(mask, axis=-3)
+    mask = jnp.expand_dims(mask, asix=tuple(range(extra_batch_dims)))
+    
+    return mask.astype(dtype)
+    
 
-def make_causal_mask():
-    pass
+def make_causal_mask(x:Array,
+                     extra_batch_dims: int = 0,
+                     dtype: Dtype = jnp.float32):
+    idxs = jnp.broadcast_to(jnp.arange(x.shape[-1], dtype=jnp.int32), x.shape)
+    return make_attention_mask(
+        idxs,
+        idxs,
+        jnp.greater_equal,
+        extra_batch_dims=extra_batch_dims,
+        dtype=dtype
+    )
 
-def combine_masks():
-    pass
+def combine_masks(*masks: Optional[Array],
+                  dtype: Dtype = jnp.float32):
+    masks = [m for m in masks if m is not None]
+    if not masks:
+        return None
+    assert all(map(lambda x: x.ndim == masks[0].ndim, masks)), f'masks must have same rank: {tuple(map(lambda x: x.ndim, masks))}'
+    
+    mask, *other_masks = masks
+    for other_mask in other_masks:
+        mask = jnp.logical_and(mask, other_mask)
+    return mask.astype(dtype)
 
 def combine_biases():
-    pass
-
-def make_decoder_mask():
-    pass
+    masks = [m for m in masks if m is not None]
+    if not masks:
+        return None
+    assert all(map(lambda x: x.ndim == masks[0].ndim, masks)), (f'masks must have same rank: {tuple(map(lambda x: x.ndim, masks))}')
+    mask, *other_masks = masks
+    
+    for other_mask in other_masks:
+        mask = mask + other_mask
+    return mask
+def make_decoder_mask(decoder_target_tokens: Array,
+                      dtype: Dtype,
+                      decoder_causal_attention: Optional[Array] = None,
+                      decoder_segment_ids: Optional[Array] = None):
+    masks = []
+    causal_mask = make_causal_mask(decoder_target_tokens, dtype=dtype)
+    
+    # Positions with value 1 in 'decoder_causal_attention' can attend bidirectionally.
+    if decoder_causal_attention is not None:
+        # [batch, 1, length, length]
+        inputs_mask = make_attention_mask(
+            decoder_causal_attention,
+            decoder_causal_attention,
+            jnp.logical_and,
+            dtype=dtype
+        )
+        masks.append(jnp.logical_or(causal_mask, inputs_mask).astype(dtype))
+    else:
+        masks.append(causal_mask)
+        
+    # Padding mask
 
 class DecoderLayer(nn.Module):
     pass
