@@ -456,7 +456,39 @@ def make_decoder_mask(decoder_target_tokens: Array,
     # Padding mask
 
 class DecoderLayer(nn.Module):
-    pass
+    config: Config
+    
+    @nn.compact
+    def __call__(self,
+                 inputs,
+                 decoder_mask,
+                 deterministic,
+                 decode,
+                 max_decode_length):
+        config = self.config
+        
+        
+        input_length = inputs.shape[-2]
+        decoder_bias = RelativePositionBiases(
+            num_buckets=32,
+            max_distance=128,
+            num_heads=config.num_heads,
+            dtype=config.dtype,
+            embedding_init=nn.initializers.variance_scaling(1.0, 'fan_avg', 'uniform'),
+            name='relpos_bias'
+        )(input_length, input_length, False)
+        
+        inputs = nn.with_logical_constraint(inputs, ('activation_batch', 'activation_length', 'activation_embed'))
+        
+        x = LayerNorm(
+            dtype=config.dtype,
+            name='pre_self_attention_layer_norm',
+            kernel_axes=('embed',)
+        )(inputs)
+        
+        x = nn.with_logical_constraint(x, ('activation_batch', 'activation_length', 'activation_embed'))
+        
+        att
 
 class Decoder(nn.Module):
     pass
