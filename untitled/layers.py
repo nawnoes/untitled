@@ -480,15 +480,47 @@ class DecoderLayer(nn.Module):
         
         inputs = nn.with_logical_constraint(inputs, ('activation_batch', 'activation_length', 'activation_embed'))
         
-        x = LayerNorm(
+        layer_norm_output = LayerNorm(
             dtype=config.dtype,
             name='pre_self_attention_layer_norm',
             kernel_axes=('embed',)
         )(inputs)
         
-        x = nn.with_logical_constraint(x, ('activation_batch', 'activation_length', 'activation_embed'))
+        layer_norm_output = nn.with_logical_constraint(layer_norm_output, ('activation_batch', 'activation_length', 'activation_embed'))
         
-        att
+        attention_output = MultiHeadDotProductAttention(
+            num_heads=config.num_heads,
+            dtype=config.dtype,
+            head_dim=config.head_dim,
+            dropout_rate=config.dropout_rate,
+            name='self_attention',
+            config=config
+        )(layer_norm_output, layer_norm_output, decoder_mask, decoder_bias, deterministic=deterministic, decode=decode)
+        attention_output = nn.with_logical_constraint(attention_output, ('activation_batch', 'activation_length', 'activation_embed'))
+        
+        mlp_output = MLPBlock(
+            intermediate_dim=config.mlp_dim,
+            activations=config.mlp_activations,
+            intermediate_dropout_rate=config.dropout_rate,
+            dtype=config.dtype,
+            name='mlp',
+            config=config
+        )(layer_norm_output, deterministic=deterministic)
+        
+        mid_output = mlp_output + attention_output
+        mid_output_dropped_out = nn.Dropout(
+            rate=config.dropout_rate,
+            broadcast_dims=(-2,)
+        )(mid_output, deterministic=deterministic)
+        
+        output = mid_output_dropped_out + inputs
+        output = nn.with_logical_constraint(output, ('activation_batch', 'activation_length', 'activation_embed'))
+        
+        if config.scan_layers:
+            return output, None
+        else:
+            return output
+        
 
 class Decoder(nn.Module):
     pass
