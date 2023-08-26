@@ -523,7 +523,91 @@ class DecoderLayer(nn.Module):
         
 
 class Decoder(nn.Module):
-    pass
+    config: Config
+    shared_embedding: nn.Module
+    
+    @nn.compact
+    def __call__(self,
+                 decoder_input_tokens,
+                 decoder_positions=None,
+                 decoder_mask=None,
+                 deterministic=False,
+                 decode=False,
+                 max_decode_length=None):
+        config = self.config
+        
+        y = self.shared_embedding(decoder_input_tokens.astype('int32'))
+        y = nn.Dropout(
+            rate=config.dropout_rate,
+            broadcast_dims=(-2,)
+        )(y, deterministic=deterministic).astype(config.dtype)
+        
+        BlockLayer = DecoderLayer
+        
+        # Gradient checkpointing policy
+        if config.remat_policy != 'none':
+            if config.remat_policy == 'minimal':
+                policy = jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims
+            elif config.remat_policy == 'proj':
+                policy = jax.checkpoint_policies.save_only_these_name('query_proj', 'value_proj', 'key_proj')
+            else:
+                assert config.remat_policy == 'full', "Remat policy needs to be on list of remat policies"
+                policy = None
+            
+            BlockLayer = nn.remat(
+                BlockLayer,
+                prevent_cse= not config.scan_layers,
+                policy=policy,
+                static_argnums=(-1, -2, -3, -4)
+            )
+        
+        # Scan layers
+        if config.scan_layers:
+            initializing = self.is_mutable_collection('params')
+            params_spec = (
+                config.param_scan_axis if initializing else nn_partitioning.ScanIn(config.param_scan_axis)
+            )
+            cache_spec = 0
+            y, _ = nn.scan(
+                BlockLayer,
+                variable_axes={
+                    'params': params_spec,
+                    'cache': cache_spec,
+                    'intermediates': 0
+                },
+                split_rngs={
+                    'params': True,
+                    'dropout': config.enable_dropout
+                },
+                in_axes=(nn.broadcast, nn.broadcast, nn.broadcast, nn.broadcast),
+                length=config.num_decoder_layers,
+                metadata_params={
+                    nn.PARTITION_NAME: 'layers'
+                }
+            )(
+                config=config, name='decoder'
+                )(
+                    y, decoder_mask,
+                    deterministic, decode, max_decode_length
+                )
+        
+        y = LayerNorm(dtype=config.dtype, name='decoder_norm', kernel_axes=('embed',))(y)
+        y = nn.Dropout(
+            rate=config.dropout_rate,
+            broadcast_dims=(-2,)
+        )(y, deterministic=deterministic)
+        
+        # LM Head
+        logits = DenseGeneral(
+            config.vocab_size,
+            dtype=jnp.float32,
+            kernel_axes=('embed', 'vocab'),
+            name='logits_dense',
+            config=config
+        )(y)
+        logits = nn.with_logical_constraint(logits, ('activation_batch', 'activation_length', 'activation_vocab'))
+        
+        return logits
 
 class DecoderOnlyTransformer(nn.Module):
     pass
