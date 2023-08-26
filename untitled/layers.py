@@ -610,4 +610,28 @@ class Decoder(nn.Module):
         return logits
 
 class DecoderOnlyTransformer(nn.Module):
-    pass
+    config: Config
+    
+    def setup(self):
+        config = self.config
+        self.shared_embedding = Embedding(
+            num_embeddings=config.vocab_size,
+            features=config.emb_dim,
+            dtype=config.dtype,
+            attend_dtype=jnp.float32,
+            embedding_init=nn.initializers.normal(stddev=1.0),
+            name='token_embedder'
+        )
+        self.decoder = Decoder(config=config, shared_embedding=self.shared_embedding)
+        
+    def __call__(
+        self,
+        decoder_input_tokens,
+        decoder_target_tokens,
+        decoder_segment_ids=None,
+        decoder_positions=None,
+        enable_dropout=True,
+        decode=False,
+        max_decode_length=None
+    ):
+        config = self.config
