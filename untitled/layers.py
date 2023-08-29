@@ -635,3 +635,23 @@ class DecoderOnlyTransformer(nn.Module):
         max_decode_length=None
     ):
         config = self.config
+        
+        if decode:
+            decoder_mask = None
+        else:
+            decoder_mask = make_decoder_mask(
+                decoder_target_tokens=decoder_target_tokens,
+                dtype=config.dtype,
+                decoder_segment_ids=decoder_segment_ids
+            )
+    
+        logits = self.decoder(
+            decoder_input_tokens=decoder_input_tokens,
+            decoder_positions=decoder_positions,
+            decoder_mask=decoder_mask,
+            deterministic=not enable_dropout,
+            decode=decode,
+            max_decode_length=max_decode_length
+        )
+        
+        return logits
