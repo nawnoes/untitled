@@ -433,6 +433,7 @@ def combine_biases():
     for other_mask in other_masks:
         mask = mask + other_mask
     return mask
+
 def make_decoder_mask(decoder_target_tokens: Array,
                       dtype: Dtype,
                       decoder_causal_attention: Optional[Array] = None,
@@ -496,6 +497,7 @@ class DecoderLayer(nn.Module):
             name='self_attention',
             config=config
         )(layer_norm_output, layer_norm_output, decoder_mask, decoder_bias, deterministic=deterministic, decode=decode)
+        
         attention_output = nn.with_logical_constraint(attention_output, ('activation_batch', 'activation_length', 'activation_embed'))
         
         mlp_output = MLPBlock(

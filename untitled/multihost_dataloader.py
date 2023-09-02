@@ -100,3 +100,22 @@ def get_next_batch_sharded(local_dataset, data_sharding, global_data_shape, glob
             for arr, d in zip(per_device_arrays, local_devices)
         ]
         return device_buffers
+    
+    input_sharding_constraint = PartitionSpec(*data_sharding, None)
+    
+    def form_gda(local_data, shape):
+        device_buffers = _put_to_devices(local_data)
+        shape = tuple(shape)
+        input_gda = jax.make_array_from_single_device_arrays(
+            shape,
+            jax.sharding.NamedSharding(
+                global_mesh,
+                input_sharding_constraint
+            ),
+            device_buffers
+        )
+        return input_gda
+    
+    input_gdas = jax.tree_map(form_gda, local_data, global_data_shape)
+    
+    return input_gdas
