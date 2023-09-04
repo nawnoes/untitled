@@ -124,7 +124,7 @@ def create_device_mesh(config, logging):
     return mesh
         
 
-def unbox_logicaly_partioned_trainstate(boxed_train_state):
+def unbox_logicaly_partitioned_trainstate(boxed_train_state):
     """Unboxes the flax.LogicallyPratitioned pieces in a train state"""
     return jax.tree_util.tree_map(
         lambda x: x.unbox() if isinstance(x, flax.linen.spmd.LogicallyPartitioned) else x,
@@ -147,10 +147,46 @@ def init_train_state(model, optimizer, config, key):
     return state
 
 def setup_initial_state(model, optimizer, config, rng, mesh, checkpoint_manager):
-    pass
+    init_train_state_partial = functools.partial(init_train_state, model, optimizer, config)
+    abstract_state = jax.eval_shape(init_train_state_partial, rng)
+    state_logical_annotations = nn.get_partition_spec(abstract_state)
+    unboxed_abstract_state = unbox_logicaly_partitioned_trainstate(abstract_state)
+    
+    with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+        state_mesh_annotations = nn.logical_to_mesh(state_logical_annotations)
+        state, raw_params = checkpointing.load_state_if_possible(
+            checkpoint_manager,
+            config.load_parameters_path,
+            config.load_from_other_directory,
+            config.load_from_other_directory_step,
+            unboxed_abstract_state,
+            mesh,
+            state_mesh_annotations
+        )
+        if not state:
+            state = pjit(
+                init_train_state_partial,
+                in_shardings=None,
+                out_shardings=state_mesh_annotations
+            )(rng)
+            if raw_params:
+                state = state.replace(params = raw_params)
+        raw_params = None
+    
+    state = unbox_logicaly_partitioned_trainstate(state)
+    return state, state_mesh_annotations
 
 def rsqrt_schedule(init_value, shift):
-    pass
+    def schedule(count):
+        return init_value * (1 + count + shift) ** -0.5 * shift ** 0.5
+    return schedule
 
 def create_learning_rate_schedule(learning_rate, warmup_steps):
-    pass
+    return optax.join_schedules([
+        optax.linear_schedule(
+            init_value=0,
+            end_value=learning_rate,
+            transition_steps=warmup_steps
+        ),
+        rsqrt_schedule(init_value=learning_rate, shift=warmup_steps)
+    ], boundaries=[warmup_steps])
