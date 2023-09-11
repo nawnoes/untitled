@@ -70,3 +70,54 @@ def _pack_with_tf_ops(dataset, keys, key2length):
             
             for k in keys:
                 val = tf.cast(x[k][i], tf.int32)
+                val = val[:tf.reduce_sum(tf.cast(tf.not_equal(val, 0), tf.int32))]
+                one_example[k] = val
+                
+            for k in keys:
+                can_append = tf.logical_and(
+                    can_append, 
+                    tf.less_equal(tf.size(partial[k]) + tf.size(one_example[k]), key2length[k])
+                )
+            
+            def false_fn():
+                return write_packed_example(partial, outputs)
+            
+            def true_fn():
+                return partial, outputs
+            
+            partial, outputs = tf.cond(can_append, true_fn, false_fn)
+            
+            new_partial = {}
+            for k in keys:
+                new_seq = one_example[k][:key2length[k]]
+                new_seq_len = tf.size(new_seq)
+                
+                new_partial[k] = tf.concat([partial[k], new_seq], 0)
+                new_partial[k + '_position'] = tf.concat(partial[k+'_position', tf.range(new_seq_len)], 0)
+            
+            partial = new_partial
+            return i + 1, partial, outputs
+        
+        i, partial, outputs = tf.while_loop(
+            cond=lambda *_: True,
+            body=body_fn,
+            loop_vars=(i, partial, outputs),
+            shape_invariants=(
+                tf.TensorShape([]),
+                {k: tf.TensorShape([None]) for k in keys_etc},
+                {k: tf.TensorShape(None) for k in keys_etc}
+            ),
+            maximum_iterations=dynamic_batch_size
+        )
+        
+        _, outputs = write_packed_example(partial, outputs)
+        packed = {k: outputs[k].stack() for k in keys_etc}
+        for k in keys:
+            packed[f'{k}_segmentation'] = (
+                tf.cumsum(tf.cast(tf.equal(packed[f'{k}_position'], 0), tf.int32), axis=1) *
+                tf.cast(tf.not_equal(packed[k], 0), tf.int32)
+            )
+            
+        return packed
+    dataset = dataset.map(map_fn, num_parallel_calls=AUTOTUNE)
+    return dataset
