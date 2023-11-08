@@ -252,10 +252,71 @@ def execute_main_command(main_command, slices, local_log_dir, zip_name):
     return return_code
 
 def run_commands(commands, id_to_print, jobname, worker_list, is_shell=False, output_logs=None, fail_fast=True):
-    pass
+    """Run commands in parallel
+    Inputs:
+        commands: list of n commands, each command is a list of strings
+        id_to_print: which command is printed to the terminal, typically 0 or None
+        jobname: Useful debugging name for the group of commands, such as SCP
+        worker_list: list of n pairs of (slice_id, worker_id)
+        is_shell: Boolean directly passed as shell argument to subprocess. Popen
+        output_logs: list of n log paths, each command will output to each log
+        fail_fast: If True, when one command fails immediately terminate others
+    """
+    children = []
+    start_time = datetime.now()
+    for i, command in enumerate(commands):
+        if output_logs and i == id_to_print:
+            persistent_log = open(output_logs[i], 'w', encoding='utf-8')
+            output_log = Tee(sys.stdout, persistent_log)
+        elif output_logs:
+            output_log = open(output_logs[i], 'w', encoding='utf-8')
+        elif i == id_to_print:
+            output_log = None
+        else:
+            output_log = subprocess.DEVNULL
+        
+        children.append(subprocess.Popen(command, stdout=output_log, stderr=output_log, shell=is_shell))
+        
+    while True:
+        returncodes = [child.poll() for child in children]
+        max_returncode = max([0] + [r for r in returncodes if r is not None])
+        completed = len([r for r in returncodes if r is not None])
+        total = len(returncodes)
+        seconds_elapsed = (datetime.now() - start_time).total_seconds()
+        
+        if completed < total:
+            slow_worker_index = returncodes.index(None)
+            slow_worker = worker_list[slow_worker_index]
+            slow_str = f', slice {slow_worker[0]} worker {slow_worker[1]} still working'
+        else:
+            slow_str = ''
+        
+        print(f'[t={seconds_elapsed:.2f}, {jobname}] Completed {completed}/{total}{slow_str}...')
+        
+        if seconds_elapsed >= 60 and not 0 in returncodes and jobname == 'SCP':
+            print(f'SCP operation timed out - terminating all processes. Please check that --INTERNAL_IP flag is set correctly')
+            for child in children:
+                child.terminate()
+            max_returncode = 255
+            break
+        
+        if fail_fast and max_returncode > 0:
+            print(f'Terminating all {jobname} processes since at least one failed')
+            for child in children:
+                child.terminate()
+            break
+        
+        if completed == total:
+            break
+    
+        time.sleep(1)
+    
+    return max_returncode, returncodes
+    
 
 def assert_script_dir_exists(script_dir):
-    pass
+    if not os.path.isdir(script_dir):
+        sys.exit(f'No directory named {script_dir} found')
 
 class Tee:
     pass
