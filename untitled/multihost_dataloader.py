@@ -11,7 +11,7 @@ import jax
 from jax.sharding import PartitionSpec
 from jax.sharding import Mesh
 
-from utils import log
+from log import log
 
 
 Pytree = Any

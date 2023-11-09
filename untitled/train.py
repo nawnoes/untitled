@@ -26,7 +26,7 @@ from jax.sharding import Mesh
 
 from jax.experimental.compilation_cache import compilation_cache as cc
 
-from utils import log
+from log import log
 from train_utils import (
     calculate_training_tflops, 
     get_first_step, 
@@ -121,7 +121,7 @@ def train_loop(config, state=None):
     train_iter, _, _, _ = preprocess_dataset(config, mesh, train_ds, eval_ds, vocab_path=os.path.join(config.base_output_directory, config.vocab_relative_path))
     
     # State
-    state, state_mesh_annotations = utils.setup_initial_state(model, optimizer, init_rng, mesh, checkpoint_manager)
+    state, state_mesh_annotations = utils.setup_initial_state(model, optimizer, config, init_rng, mesh, checkpoint_manager)
     data_pspec = P(*config.data_sharding)
     
     # Number of parameters and TFLOPS

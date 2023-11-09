@@ -17,7 +17,6 @@ load_from_other_directory: ""
 # Which step to load from other directory, defaults to latest step
 load_from_other_directory_step: -1
 
-
 reuse_example_batch: 0 # for testing TPU performance, this options repeated uses the same batch.
 
 metrics_file: "" # for testing, local file that stores scalar metrics. If empty, no metrics are written.
@@ -30,11 +29,11 @@ use_int8_training: False
 # Global parameter scale needs to be a power of 2. If you want finer grained control of the model sizes 
 # then you should explicitly set base_embed_dim, base_num_heads, base_mlp_dim, base_num_decoder_layers and/or head_dim.
 global_parameter_scale: 1
-base_emb_dim: 2048
+base_emb_dim: 1024
 base_num_heads: 8
-base_mlp_dim: 8192
-base_num_decoder_layers: 20
-head_dim: 256
+base_mlp_dim: 4096
+base_num_decoder_layers: 12
+head_dim: 128
 # activation functions are .
 mlp_activations: ["relu"]
 dropout_rate: 0

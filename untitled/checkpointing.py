@@ -7,7 +7,7 @@ from orbax.checkpoint.checkpoint_manager import CheckpointManager, CheckpointMan
 from orbax.checkpoint import type_handlers
 import socket
 
-from utils import log
+from log import log
 
 from flax.training import train_state
 
@@ -75,11 +75,11 @@ def load_state_if_possible(checkpoint_manager,
             return type_handlers.RestoreArgs()
         
     restore_args = jax.tree_util.tree_map(map_to_pspec, abstract_unboxed_pre_state, state_mesh_annotations)
-    lastest_step = checkpoint_manager.lastest_step()
+    latest_step = checkpoint_manager.latest_step()
     
-    if lastest_step is not None:
-        log(f' Restoring state from this run\'s directory latest step {lastest_step}')
-        return checkpoint_manager.restore(lastest_step, abstract_unboxed_pre_state,{"restore_args": restore_args}), None
+    if latest_step is not None:
+        log(f' Restoring state from this run\'s directory latest step {latest_step}')
+        return checkpoint_manager.restore(latest_step, abstract_unboxed_pre_state,{"restore_args": restore_args}), None
     
     elif first_checkpoint_path != "":
         log(f'Restoring state from first_checkpoint_path {first_checkpoint_path}')

@@ -22,6 +22,7 @@ def _lists_to_tuples(l):
 
 class _HyperParameters():
     def __init__(self, argv, **kwargs):
+        print(argv)
         with open(argv[1], "r", encoding="utf-8") as yaml_file:
             raw_data_from_yaml = yaml.safe_load(yaml_file)
             
@@ -33,7 +34,7 @@ class _HyperParameters():
         
         raw_keys = OrderedDict()
         for k in raw_data_from_yaml:
-            if k not in raw_data_from_cmd_line:
+            if k in raw_data_from_cmd_line:
                 raw_keys[k] = raw_data_from_cmd_line[k]
             else:
                 raw_keys[k] = raw_data_from_yaml[k]
@@ -44,6 +45,7 @@ class _HyperParameters():
     def _load_kwargs(self, argv, **kwargs):
         args_dict = dict(a.split("=") for a in argv[2:])
         args_dict.update(kwargs)
+        print(args_dict)
         return args_dict
     
     @staticmethod

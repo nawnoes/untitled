@@ -1,5 +1,5 @@
 import jax
-from utils import log
+from log import log
 
 
 def calculate_training_tflops(num_model_parameters, config):

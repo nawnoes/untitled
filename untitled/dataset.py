@@ -8,11 +8,11 @@ import tensorflow_datasets as tfds
 import jax
 from jax.sharding import PartitionSpec as P
 
-from utils import log
+from log import log
 
 import tokenizer
 import multihost_dataloader
-import sequence_packing
+import packing
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 
@@ -90,7 +90,7 @@ def preprocessing_pipeline(dataset,
     
     # Packing
     if pack_examples:
-        dataset = sequence_packing.pack_dataset(dataset, max_length)
+        dataset = packing.pack_dataset(dataset, max_length)
     
     # Shift inputs for teacher forcing
     if shift:

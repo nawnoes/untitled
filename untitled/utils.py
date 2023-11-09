@@ -17,9 +17,7 @@ from flax.linen import partitioning as nn_partitioning
 import optax
 import os
 import subprocess
-
-def log(text):
-    print(text, flush = True)
+from log import log
     
 def l2norm_pytree(x):
     return jax.tree_util.tree_reduce(

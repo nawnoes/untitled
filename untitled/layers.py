@@ -72,7 +72,7 @@ def nd_dense_init(scale, mode, distribution):
     "Initializer with in_axis, out_axis set at call time."
     def init_fn(key, shape, dtype, in_axis, out_axis):
         fn = jax.nn.initializers.variance_scaling(scale, mode, distribution, in_axis, out_axis)
-        return fn
+        return fn(key, shape, dtype)
     return init_fn
 
 def _normalize_axes(axes, ndim):
@@ -99,7 +99,7 @@ class DenseGeneral(nn.Module):
         axis = _canonicalize_tuple(self.axis)
         
         inputs = jnp.asarray(inputs, self.dtype)
-        axis = _normalize_axes(self.axis, inputs.ndim)
+        axis = _normalize_axes(axis, inputs.ndim)
         
         kernel_shape = tuple(inputs.shape[ax] for ax in axis) + features
         kernel_in_axis = np.arange(len(axis))
@@ -118,11 +118,11 @@ class DenseGeneral(nn.Module):
         contract_ind = tuple(range(0, len(axis)))
         return lax.dot_general(inputs, kernel, ((axis, contract_ind), ((),())))
 
-def _convert_to_activationf_function(fn_or_string):
+def _convert_to_activation_function(fn_or_string):
     if fn_or_string == 'linear':
         return lambda x: x
     elif isinstance(fn_or_string, str):
-        return getattr(nn. fn_or_string)
+        return getattr(nn, fn_or_string)
     elif callable(fn_or_string):
         return fn_or_string
 
@@ -156,7 +156,7 @@ class MultiHeadDotProductAttention(nn.Module):
         # rescale the attention logits by 1/sqrt(depth_kq)
         depth_scaling = jnp.sqrt(self.head_dim).astype(self.dtype)
         def query_init(*args):
-            return self.kernel_init(*args) / depth_scaling
+            return self.kernel_init(*args)/depth_scaling
         
         # project input to multi-headed q/k/v
         query = projection(kernel_init=query_init, name='query')(inputs_q)
@@ -205,7 +205,7 @@ class MultiHeadDotProductAttention(nn.Module):
         )
         
         out = DenseGeneral(
-            feature=inputs_q.shape[-1],
+            features=inputs_q.shape[-1],
             axis=(-2, -1),
             kernel_init=self.kernel_init,
             kernel_axes=('head', 'kv', 'embed'),
@@ -241,7 +241,7 @@ class MLPBlock(nn.Module):
                 config=config
             )(inputs)
             
-            x = _convert_to_activationf_function(act_fn)(x)
+            x = _convert_to_activation_function(act_fn)(x)
             activations.append(x)
         
         x = functools.reduce(operator.mul, activations)
@@ -394,7 +394,7 @@ def make_attention_mask(query_input: Array,
     )
     
     mask = jnp.expand_dims(mask, axis=-3)
-    mask = jnp.expand_dims(mask, asix=tuple(range(extra_batch_dims)))
+    mask = jnp.expand_dims(mask, axis=tuple(range(extra_batch_dims)))
     
     return mask.astype(dtype)
     
@@ -423,7 +423,7 @@ def combine_masks(*masks: Optional[Array],
         mask = jnp.logical_and(mask, other_mask)
     return mask.astype(dtype)
 
-def combine_biases():
+def combine_biases(*masks: Optional[Array]):
     masks = [m for m in masks if m is not None]
     if not masks:
         return None
